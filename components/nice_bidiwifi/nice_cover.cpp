@@ -86,6 +86,15 @@ void NiceCover::on_state_change_() {
     }
   }
 
+  // Some controllers reach the encoder endpoint slightly before they report the final
+  // Opened/Closed state (MC824H slow-down is one example). Keep the cover UI visibly
+  // in-travel until the controller confirms the endpoint. Raw encoder sensors remain unchanged.
+  if (state == STA_OPENING && pos >= cover::COVER_OPEN) {
+    pos = 0.99f;
+  } else if (state == STA_CLOSING && pos <= cover::COVER_CLOSED) {
+    pos = 0.01f;
+  }
+
   cover::CoverOperation op;
   switch (state) {
     case STA_OPENING:
