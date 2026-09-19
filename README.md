@@ -5,7 +5,7 @@ An [ESPHome](https://esphome.io/) external component that replaces the factory f
 ## Features
 
 - **Full gate control** — Open, Close, Stop, Partial Open, Lock/Unlock, Light Toggle
-- **Real-time position tracking** — Encoder-based position with percentage display
+- **Real-time position tracking** — Encoder-based position with percentage display, including indexed 16-bit encoder support for MC824H
 - **Configurable parameters** — Force, Pause Time via Home Assistant number entities
 - **Feature switches** — Auto Close, Photo Close, Always Close, Standby, Pre-Flash, Key Lock
 - **Diagnostics** — Photocell, limit switches, obstacle detection, stop reason, maneuver counters
@@ -23,12 +23,43 @@ The [Nice BiDi-WiFi](https://www.niceforyou.com/) module is an ESP32-WROOM-32E b
 | Controller | Type | Status |
 |-----------|------|--------|
 | **MC800** | Swing gate | Fully tested and working |
+| **MC824H / MCA1R10** | Swing gate | Fully tested and working, including live indexed encoder position |
 | **CL201** | Swing gate | Tested and working |
 
 Other Nice controllers with IBT4N/BusT4 interface should work (Walky, Robus, Road 400, etc.) with device-specific adaptations built in:
+- **MC824H** — Auto-detected from the product string; uses indexed DMP position reads with index `0x01` and 16-bit big-endian encoder values
 - **Walky (WLA)** — 1-byte position values (auto-detected)
 - **Robus (ROB)** — Position polling disabled during movement (auto-detected)
 - **Road 400** — Alternate status codes 0x83/0x84 handled
+
+### MC824H / MCA1R10 support
+
+MC824H support was validated on real hardware with a one-motor installation. The controller exposes live motor position through an indexed DMP read rather than the normal unindexed position format used by several other Nice controllers.
+
+For MC824H the component automatically:
+
+- detects product `MC824H`;
+- selects DMP position index `0x01`;
+- reads current position from `04/11` using that index;
+- decodes the three-byte payload as `[index][MSB][LSB]`;
+- uses indexed `04/18` when available for the open-position reference;
+- learns endpoint values from real `04/11` samples when the controller reports `Opened` / `Closed`;
+- avoids applying the generic `04/D1` limit-switch mapping, because the MC824H diagnostic layout differs from controllers for which that mapping is known;
+- keeps Home Assistant at 99% while still `Opening` and 1% while still `Closing`, publishing the final 100% / 0% only after the controller confirms `Opened` / `Closed`.
+
+Example captured position payloads:
+
+```text
+01 0B 12 -> 2834  fully open
+01 0A F5 -> 2805  moving
+01 00 77 -> 119   near closed
+01 00 00 -> 0     encoder endpoint
+01 00 05 -> 5     settled closed endpoint
+```
+
+On the tested MC824H, indexed `04/18` returned approximately `2832`, while indexed `04/19` returned `0xFD` (unsupported), so the closed endpoint is learned from the live encoder at the confirmed `Closed` state.
+
+See [docs/mc824h-indexed-position.md](docs/mc824h-indexed-position.md) for protocol details and captured examples.
 
 ## How position tracking works
 
@@ -43,12 +74,18 @@ Encoder-derived position is preferred only when a reading arrived within the las
 Position percentage is calculated from DMP registers (matching the [homeassistant_nice](https://github.com/Jordi-14/homeassistant_nice) integration):
 
 ```text
-position% = (0x11 current − 0x19 closed) / (0x18 open − 0x19 closed) × 100
+position% = (0x11 current − closed) / (open − closed) × 100
 ```
+
+Normally:
 
 - `0x11` = current encoder position (`REG_CUR_POS`)
 - `0x18` = full-open encoder value (`REG_POS_MAX`) — **not** `0x12` (`REG_MAX_OPN`, partial-open reference)
 - `0x19` = closed encoder value (`REG_POS_MIN`)
+
+For controllers such as MC824H where an endpoint register is unavailable, the component can learn the missing endpoint from the live encoder when the controller confirms the final `Opened` / `Closed` state.
+
+**MC824H** controllers are detected from the product name and use indexed position reads with DMP index `0x01`. The response payload is decoded as `[index][MSB][LSB]`, giving a real 16-bit encoder value throughout travel.
 
 **Robus** units are detected from the product name; for those, position is **not** polled during movement because the drive does not handle it reliably.
 
@@ -63,9 +100,11 @@ If encoder data is unavailable or stale during a move, position is estimated fro
 - Only durations between about **3 seconds** and **5 minutes** are accepted; interrupted cycles do **not** update stored timings.
 - If a new measurement differs from the stored duration by more than about **10%**, the stored value is updated (adaptive re-learning).
 
-### 3. Limit switch confirmation
+### 3. Limit switch / endpoint confirmation
 
-Diagnostic **I/O** (`REG_DIAG_IO`) is read after relevant status changes. Limit-switch bits are used to snap position to **fully open** or **fully closed** when the automation status matches (`STA_OPENED` / `STA_CLOSED`), which corrects small drift in the time-based estimate.
+Diagnostic **I/O** (`REG_DIAG_IO`) is read after relevant status changes on controllers where its bit layout is known. Limit-switch information can snap position to **fully open** or **fully closed** when the automation status matches (`STA_OPENED` / `STA_CLOSED`), correcting small drift in the time-based estimate.
+
+MC824H is handled differently: its observed `04/D1` diagnostic layout does not match the generic mapping, so that mapping is deliberately not applied. Instead, the component relies on the indexed encoder plus the controller's final `Opened` / `Closed` state and then refreshes `04/11` to learn/confirm the endpoint.
 
 ### 4. Periodic status refresh
 
@@ -404,7 +443,7 @@ The Nice T4 bus protocol operates at 19200 baud 8N1 with UART break signaling:
 ### Architecture
 
 ```
-Home Assistant ←→ ESPHome (ESP32) ←→ T4 Bus ←→ Nice Control Unit (MC800)
+Home Assistant ←→ ESPHome (ESP32) ←→ T4 Bus ←→ Nice Control Unit (MC800 / MC824H / others)
                    WiFi/API            UART         Gate Motor
 ```
 
@@ -419,13 +458,14 @@ This project was inspired by and references the work of:
 - **[pruwait/Nice_BusT4](https://github.com/nicedaemon/Nice_BusT4)** — Original ESP8266 ESPHome component for T4 bus communication. Pioneered the ESPHome approach.
 - **[gashtaan/nice-bidiwifi-firmware](https://github.com/gashtaan/nice-bidiwifi-firmware)** — ESP32 Arduino firmware for BiDi-WiFi. Provided key protocol insights including the 0x5090 hub address.
 - **[makstech/esphome-BusT4](https://github.com/makstech/esphome-BusT4)** — ESP32 ESP-IDF ESPHome component. Comprehensive implementation with OXI support.
+- **[Jordi-14/homeassistant_nice](https://github.com/Jordi-14/homeassistant_nice)** — Useful reference for DMP position registers and indexed request support.
 
 This implementation is a **clean-room rewrite** — no code was copied from the above projects (which use GPL v3). Protocol knowledge was derived from cross-referencing multiple sources and live hardware testing.
 
 ### Protocol References
 - Nice DMBM Integration Protocol documentation
 - MyNicePro APK reverse engineering (protocol layer analysis)
-- Live packet analysis on MC800 hardware
+- Live packet analysis on MC800 and MC824H hardware
 
 ## License
 
@@ -433,4 +473,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Disclaimer
 
-This project is not affiliated with, endorsed by, or connected to Nice S.p.A. in any way. "Nice", "BiDi-WiFi", "MC800", and other product names are trademarks of Nice S.p.A. Use at your own risk — modifying gate automation firmware can affect safety features. Always ensure proper safety measures are in place.
+This project is not affiliated with, endorsed by, or connected to Nice S.p.A. in any way. "Nice", "BiDi-WiFi", "MC800", "MC824H", and other product names are trademarks of Nice S.p.A. Use at your own risk — modifying gate automation firmware can affect safety features. Always ensure proper safety measures are in place.
