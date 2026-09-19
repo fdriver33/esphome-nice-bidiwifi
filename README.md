@@ -201,7 +201,7 @@ Add to your ESPHome YAML:
 
 ```yaml
 external_components:
-  - source: github://YOUR_USERNAME/esphome-nice-bidiwifi
+  - source: github://fdriver33/esphome-nice-bidiwifi
     components: [nice_bidiwifi]
 ```
 
@@ -225,7 +225,8 @@ esp32:
     type: esp-idf
 
 external_components:
-  - source: components
+  - source: github://fdriver33/esphome-nice-bidiwifi
+    components: [nice_bidiwifi]
 
 logger:
   level: DEBUG
