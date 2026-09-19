@@ -156,7 +156,9 @@ class NiceBidiWiFi : public Component {
   float position_at_movement_start_{0.0f};
   uint32_t last_open_duration_ms_{0};
   uint32_t last_close_duration_ms_{0};
-  uint32_t last_encoder_update_time_{0};
+  // Signed 64-bit avoids a transient unsigned underflow when loop() captures
+  // `now` just before an RX packet updates this timestamp a few milliseconds later.
+  int64_t last_encoder_update_time_{0};
 
   bool awaiting_confirmation_{false};
 
