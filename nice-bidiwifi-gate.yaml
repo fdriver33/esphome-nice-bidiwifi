@@ -10,7 +10,7 @@ esp32:
 external_components:
   - source:
       type: git
-      url: https://github.com/ngem1/esphome-nice-bidiwifi
+      url: https://github.com/fdriver33/esphome-nice-bidiwifi
       ref: main  # pin a branch (e.g. cover-invert-num-fix) or use local: source: components
     components: [nice_bidiwifi]
     refresh: Always
